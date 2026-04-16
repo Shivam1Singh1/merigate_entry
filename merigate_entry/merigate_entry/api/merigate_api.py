@@ -1,134 +1,134 @@
 import frappe
 
-
 # ─────────────────────────────────────────────
 # Global Config
 # ─────────────────────────────────────────────
 ERP_BASE_URL = "https://staging.microcrispr.com"
+ALLOWED_ROLES = ["Merigate Entry User", "System Manager"]
 
 
 # ─────────────────────────────────────────────
-# 1. Create / Update Merigate Entry
+# Helper: Role Check
 # ─────────────────────────────────────────────
-@frappe.whitelist()
-def create_merigate_entry(**kwargs):
-    skip_fields = {"name", "doctype", "owner", "creation", "modified"}
+def has_merigate_access(user_email):
+    roles = frappe.get_roles(user_email)
+    return any(role in roles for role in ALLOWED_ROLES)
+
+
+# ─────────────────────────────────────────────
+# 1. Login
+# ─────────────────────────────────────────────
+@frappe.whitelist(allow_guest=True)
+def login_user(email, password):
     try:
-        # Get docname
-        docname = kwargs.get("name") or kwargs.get("docname")
-        if not docname:
-            frappe.throw("Merigate Doc Name is required")
+        # Input validation
+        if not email or not password:
+            return {"status": "error", "message": "Email and password are required."}
 
-        # Role check (SECURITY FIX)
-        user_roles = frappe.get_roles(frappe.session.user)
-        if not any(role in user_roles for role in ["Merigate Entry User", "System Manager"]):
-            return {
-                "status": "error",
-                "message": "Access denied. Contact admin."
-            }
+        # User existence check
+        if not frappe.db.exists("User", email):
+            return {"status": "error", "message": "User not found. Contact admin."}
 
-        # Check if exists
+        # Authenticate
+        from frappe.auth import LoginManager
+        try:
+            lm = LoginManager()
+            lm.authenticate(user=email, pwd=password)
+            lm.post_login()
+            frappe.db.commit()
+        except Exception:
+            return {"status": "error", "message": "Invalid credentials."}
+
+        # Role check after login
+        if not has_merigate_access(email):
+            frappe.local.login_manager.logout()
+            frappe.db.commit()
+            return {"status": "error", "message": "Access not assigned. Contact admin."}
+
+        # Remove Frappe default response fields
+        frappe.response.pop("home_page", None)
+        frappe.response.pop("full_name", None)
+
+        return {
+            "status": "success",
+            "message": "Login successful.",
+            "user": email,
+            "full_name": frappe.db.get_value("User", email, "full_name")
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "login_user Error")
+        return {"status": "error", "message": str(e)}
+
+
+# ─────────────────────────────────────────────
+# 2. Create / Update Merigate Entry
+# ─────────────────────────────────────────────
+@frappe.whitelist(allow_guest=True)
+def create_merigate_entry(**kwargs):
+    SKIP_FIELDS = {"name", "doctype", "owner", "creation", "modified"}
+
+    # Session check
+    if frappe.session.user == "Guest":
+        return {"status": "error", "message": "Not logged in. Please login first."}
+
+    # Role check
+    if not has_merigate_access(frappe.session.user):
+        return {"status": "error", "message": "Access denied. Contact admin."}
+
+    # Input validation — before try block so frappe.throw works properly
+    docname = kwargs.get("docname")
+    if not docname:
+        return {"status": "error", "message": "Merigate Doc Name is required."}
+
+    try:
+        # Create or update doc
         if frappe.db.exists("Merigate Entry", {"docname": docname}):
             doc = frappe.get_doc("Merigate Entry", {"docname": docname})
         else:
             doc = frappe.new_doc("Merigate Entry")
-            doc.docname = docname   # Correct primary key usage
+            doc.docname = docname
 
-        # Map fields dynamically (OPTIMIZED)
+        # Map fields
         for key, value in kwargs.items():
-            if key not in skip_fields and hasattr(doc, key):
+            if key not in SKIP_FIELDS and hasattr(doc, key):
                 setattr(doc, key, value)
 
-        # Defaults (if not passed)
+        # Defaults
         if not doc.category:
             doc.category = "General Purchase"
 
         if not doc.status:
             doc.status = "Open"
 
-        # Save
         doc.save(ignore_permissions=True)
         frappe.db.commit()
 
         return {
             "status": "success",
             "docname": doc.docname,
-            "message": "Merigate Entry saved successfully"
+            "message": "Merigate Entry saved successfully."
         }
 
     except Exception as e:
         frappe.log_error(frappe.get_traceback(), "create_merigate_entry Error")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        return {"status": "error", "message": str(e)}
 
 
 # ─────────────────────────────────────────────
-# 2. Unified Login (Single Entry Point)
+# 3. Logout
 # ─────────────────────────────────────────────
 @frappe.whitelist(allow_guest=True)
-def login_user(email, password, first_name="", last_name=""):
+def logout_user():
     try:
-        # ── New user? ──
-        if not frappe.db.exists("User", email):
-            if not first_name:
-                return {
-                    "status": "error",
-                    "message": "User not found. Provide first_name to create a new account."
-                }
+        # Check if session is already expired
+        if frappe.session.user == "Guest":
+            return {"status": "error", "message": "No active session to logout."}
 
-            user = frappe.get_doc({
-                "doctype": "User",
-                "email": email,
-                "first_name": first_name,
-                "last_name": last_name,
-                "enabled": 1,
-                "new_password": password,
-                "send_welcome_email": 0,
-            })
-            user.insert(ignore_permissions=True)
-            frappe.db.commit()
-
-            return {
-                "status": "success",
-                "message": f"User '{email}' created successfully. Contact admin to assign access role."
-            }
-
-        # ── Existing user → authenticate ──
-        try:
-            frappe.local.login_manager.authenticate(email, password)
-        except Exception:
-            return {
-                "status": "error",
-                "message": "Invalid credentials"
-            }
-
-        # ── Role check ──
-        roles = frappe.get_roles(email)
-        if not any(role in roles for role in ["Merigate Entry User", "System Manager"]):
-            return {
-                "status": "error",
-                "message": "Access not assigned. Contact admin."
-            }
-
-        # ── Generate token ──
-        user = frappe.get_doc("User", email)
-        api_key = frappe.generate_hash(length=15)
-        api_secret = frappe.generate_hash(length=15)
-        user.api_key = api_key
-        user.api_secret = api_secret
-        user.save(ignore_permissions=True)
+        frappe.local.login_manager.logout()
         frappe.db.commit()
-
-        return {
-            "status": "success",
-            "token": f"{api_key}:{api_secret}",
-            "base_url": ERP_BASE_URL,
-            "endpoint": f"{ERP_BASE_URL}/api/method/merigate_entry.merigate_entry.api.merigate_api.create_merigate_entry",
-            "message": "Login successful"
-        }
+        return {"status": "success", "message": "Logged out successfully."}
 
     except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "login_user Error")
-        return {"status": "error", "message": str(e)}        
+        frappe.log_error(frappe.get_traceback(), "logout_user Error")
+        return {"status": "error", "message": "Logout failed. Session may already be expired."}

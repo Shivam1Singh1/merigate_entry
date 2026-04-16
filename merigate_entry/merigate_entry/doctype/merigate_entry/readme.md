@@ -2,7 +2,7 @@
 
 ## Overview
 
-Merigate Entry is a Frappe-based application that receives invoice and gate entry data from the Merigate system and stores it in the ERP.
+Merigate Entry is a Frappe-based application that receives invoice and gate entry data from the Merigate system and stores it in the ERP. Authentication is session-based — login once, and Frappe's `sid` cookie handles all subsequent requests automatically.
 
 ---
 
@@ -17,8 +17,8 @@ https://staging.microcrispr.com
 ## Authentication Flow
 
 ```
-Step 1: Login → Get Token
-Step 2: Use Token to send data
+Step 1: Login → Frappe sets sid cookie automatically
+Step 2: Send sid cookie with every subsequent request
 ```
 
 ---
@@ -27,7 +27,7 @@ Step 2: Use Token to send data
 
 ---
 
-### 1. Login / Register User
+### 1. Login
 
 **Endpoint**
 
@@ -56,13 +56,14 @@ Content-Type: application/json
 {
   "message": {
     "status": "success",
-    "token": "api_key:api_secret",
-    "base_url": "https://staging.microcrispr.com",
-    "endpoint": "https://staging.microcrispr.com/api/method/merigate_entry.merigate_entry.api.merigate_api.create_merigate_entry",
-    "message": "Login successful"
+    "message": "Login successful.",
+    "user": "user@example.com",
+    "full_name": "John Doe"
   }
 }
 ```
+
+> After a successful login, Frappe automatically sets a `sid` cookie in the response. This cookie must be included in all subsequent API calls.
 
 **Error Responses**
 
@@ -72,7 +73,7 @@ _User not found_
 {
   "message": {
     "status": "error",
-    "message": "User not found. Provide first_name to create a new account."
+    "message": "User not found. Contact admin."
   }
 }
 ```
@@ -83,7 +84,7 @@ _Invalid credentials_
 {
   "message": {
     "status": "error",
-    "message": "Invalid credentials"
+    "message": "Invalid credentials."
   }
 }
 ```
@@ -113,7 +114,7 @@ POST /api/method/merigate_entry.merigate_entry.api.merigate_api.create_merigate_
 
 ```
 Content-Type: application/json
-Authorization: token api_key:api_secret
+Cookie: sid=<your_sid_from_login>
 ```
 
 **Request Body (Example)**
@@ -170,6 +171,17 @@ Authorization: token api_key:api_secret
 
 **Error Responses**
 
+_Not logged in_
+
+```json
+{
+  "message": {
+    "status": "error",
+    "message": "Not logged in. Please login first."
+  }
+}
+```
+
 _Access denied_
 
 ```json
@@ -190,6 +202,66 @@ _Missing docname_
     "message": "Merigate Doc Name is required"
   }
 }
+```
+
+---
+
+### 3. Logout
+
+**Endpoint**
+
+```
+POST /api/method/merigate_entry.merigate_entry.api.merigate_api.logout_user
+```
+
+**Headers**
+
+```
+Cookie: sid=<your_sid>
+```
+
+**Success Response**
+
+```json
+{
+  "message": {
+    "status": "success",
+    "message": "Logged out successfully."
+  }
+}
+```
+
+---
+
+## How to Use the sid Cookie
+
+### In Postman
+
+1. Call `login_user` — Postman stores the `sid` cookie automatically
+2. In subsequent requests go to **Headers** tab and add:
+   ```
+   Key:   Cookie
+   Value: sid=<value from Cookies tab>
+   ```
+
+### In Code (Python example)
+
+```python
+import requests
+
+session = requests.Session()
+
+# Step 1: Login
+session.post(
+    "https://staging.microcrispr.com/api/method/merigate_entry.merigate_entry.api.merigate_api.login_user",
+    json={"email": "user@example.com", "password": "yourpassword"}
+)
+
+# Step 2: Send data — session cookie is sent automatically
+response = session.post(
+    "https://staging.microcrispr.com/api/method/merigate_entry.merigate_entry.api.merigate_api.create_merigate_entry",
+    json={"docname": "MG-TEST-001", "category": "General Purchase", ...}
+)
 ```
 
 ---
@@ -220,7 +292,7 @@ _Missing docname_
 | eway_bill_no           | Data     | No       | E-way bill                      |
 | eway_bill_date         | Date     | No       | YYYY-MM-DD                      |
 | transport_courier      | Data     | No       | Transport name                  |
-| lr_airway_bill_no      | Data     | No       | LR/AWB                          |
+| lr_airway_bill_no      | Data     | No       | LR/AWB number                   |
 | lr_airway_bill_date    | Date     | No       | YYYY-MM-DD                      |
 | vehicle_type           | Data     | No       | Vehicle type                    |
 | vehicle_no             | Data     | No       | Vehicle number                  |
@@ -238,41 +310,56 @@ _Missing docname_
 ## User Flow
 
 ```
-Login → Validate user → Check role → Generate token
-→ Send data with token → Validate role → Save entry
+Login (email + password)
+  → Frappe authenticates → sets sid cookie
+  → Send data with sid cookie
+  → Server validates session → checks role → saves entry
 ```
 
 ---
 
 ## Role Setup
 
-Admin must assign role manually:
+Admin must assign the role manually in ERP:
 
 ```
-ERP → Users → Roles → Merigate Entry User
+ERP → Users → [Select User] → Roles → Add "Merigate Entry User"
 ```
 
-Without role:
+Without this role:
 
-- Login will fail
+- Login will return "Access not assigned"
 - Data cannot be saved
 
 ---
 
 ## App Information
 
-| Field        | Value                                                               |
-| ------------ | ------------------------------------------------------------------- |
-| App Name     | merigate_entry                                                      |
-| Publisher    | Shivam Singh                                                        |
-| Email        | [shivam.singh@microcrispr.com](mailto:shivam.singh@microcrispr.com) |
-| License      | MIT                                                                 |
-| ERP Base URL | https://staging.microcrispr.com                                     |
+| Field        | Value                           |
+| ------------ | ------------------------------- |
+| App Name     | merigate_entry                  |
+| Publisher    | Shivam Singh                    |
+| Email        | shivam.singh@microcrispr.com    |
+| License      | MIT                             |
+| ERP Base URL | https://staging.microcrispr.com |
 
 ---
 
 ## Summary
 
-- Role-based access control
-- API-driven data entry
-- Secure ERP integration
+- Session-based authentication using Frappe's native `sid` cookie
+- No token generation or management required
+- Role-based access control via `Merigate Entry User` role
+- Supports both create and update of Merigate Entry documents
+
+
+
+Login (email + password)
+  → Input validation (email + password required)
+  → User existence check
+  → Frappe authenticates → sets sid cookie
+  → Role check (Merigate Entry User / System Manager)
+  → If role missing → auto logout → return error
+  → Send data with sid cookie
+  → Server validates session → checks role → saves entry
+  → Logout → clears session
